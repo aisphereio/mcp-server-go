@@ -7,6 +7,11 @@ compatibility_flags = ["nodejs_compat"]
 UPSTREAM_GOPROXY = "https://proxy.golang.org"
 # Optional hardening. Set with `npx wrangler secret put ...` in production instead of plain vars.
 # PROXY_TOKEN = "change-me"
+# DOWNLOAD_TOKEN = "change-me"
 # MCP_BEARER_TOKEN = "change-me"
 # ALLOW_MODULE_PREFIXES = "github.com/aisphereio/,github.com/gin-gonic/"
 # BLOCK_MODULE_PREFIXES = "example.com/bad/"
+# DOWNLOAD_ALLOW_TOOLS = "go,buf,protoc"
+# DEFAULT_GO_VERSION = "go1.26.4"
+# DEFAULT_BUF_VERSION = "v1.71.0"
+# DEFAULT_PROTOC_VERSION = "35.1"
