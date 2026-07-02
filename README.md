@@ -2,13 +2,15 @@
 
 Cloudflare Workers / Cloudflare Pages Functions based MCP server for Go development in restricted network environments.
 
-It exposes three things:
+It exposes five things:
 
-1. `GET /proxy/...` — a Go module proxy bridge. Set `GOPROXY` to this endpoint and run `go mod tidy` locally, in Codespaces, or in another sandbox that can reach Cloudflare.
-2. `GET /download/...` — a binary download bridge for Go, buf, and protoc release artifacts.
-3. `POST /mcp` — a remote MCP endpoint with tools that can generate Go proxy config, preflight module reachability, and generate binary tool download commands.
+1. `GET /proxy/...` — Go module proxy bridge. Set `GOPROXY` to this endpoint and run `go mod tidy` locally, in Codespaces, or in another sandbox that can reach Cloudflare.
+2. `GET /download/...` — binary download bridge for Go, buf, and protoc release artifacts.
+3. `GET|POST /git/...` — GitHub HTTPS smart-protocol proxy for public GitHub repositories, and optionally private repositories if `GITHUB_TOKEN` is configured.
+4. `GET /github/archive/...` — GitHub repository archive download bridge for zip or tar.gz source packages.
+5. `POST /mcp` — remote MCP endpoint with tools for Go module proxy config, binary tool downloads, and GitHub repo clone/archive command generation.
 
-This is not a generic TCP proxy and it does not run the Go compiler inside Cloudflare. Cloudflare Workers/Pages Functions are best used here as an HTTP bridge to upstream artifact hosts such as `https://proxy.golang.org`, `https://go.dev/dl`, and GitHub Releases.
+This is not a generic TCP proxy and it does not run `git`, `go`, or the compiler inside Cloudflare. Cloudflare only streams HTTP requests to upstream services such as `proxy.golang.org`, `go.dev`, GitHub Releases, and GitHub HTTPS Git endpoints.
 
 ## Architecture
 
@@ -17,30 +19,22 @@ ChatGPT / MCP client
         |
         | Streamable HTTP MCP
         v
-Cloudflare /mcp -------------- tools: go_proxy_config, go_proxy_fetch, go_mod_preflight,
-        |                         tool_download_config, tool_download_preflight,
-        |                         tool_download_bundle_manifest
+Cloudflare /mcp -------------- tools: go_proxy_config, go_mod_preflight,
+        |                         tool_download_config, github_repo_config,
+        |                         github_repo_preflight, ...
         |
-        | normal HTTP Go proxy protocol
-        v
-Cloudflare /proxy/* ---------- streams to UPSTREAM_GOPROXY
+        +-> /proxy/* ------------ streams Go module proxy protocol
+        |                          -> https://proxy.golang.org
         |
-        v
-https://proxy.golang.org
-
-curl / wget / Go sandbox
+        +-> /download/* --------- streams Go / buf / protoc binaries
+        |                          -> go.dev / GitHub Releases
         |
-        v
-Cloudflare /download/* ------- streams Go / buf / protoc binaries
+        +-> /git/* -------------- proxies GitHub HTTPS smart protocol
+        |                          -> https://github.com/{owner}/{repo}.git
         |
-        +-> https://go.dev/dl/...
-        +-> https://github.com/bufbuild/buf/releases/download/...
-        +-> https://github.com/protocolbuffers/protobuf/releases/download/...
+        +-> /github/archive/* --- streams repository zip/tar.gz archives
+                                   -> https://codeload.github.com
 ```
-
-For the actual `go mod tidy` path, the important endpoint is `/proxy`, because the Go tool already knows how to speak the Go module proxy protocol.
-
-For installing missing developer tools such as Go, buf, or protoc, use `/download`.
 
 ## Deploy as a Worker
 
@@ -55,22 +49,6 @@ After deploy, you will get a URL like:
 
 ```text
 https://mcp-server-go.<your-account>.workers.dev
-```
-
-Use:
-
-```bash
-export GOPROXY="https://mcp-server-go.<your-account>.workers.dev/proxy,direct"
-export GOSUMDB="sum.golang.org"
-go mod tidy
-```
-
-PowerShell:
-
-```powershell
-$env:GOPROXY="https://mcp-server-go.<your-account>.workers.dev/proxy,direct"
-$env:GOSUMDB="sum.golang.org"
-go mod tidy
 ```
 
 ## Deploy as Cloudflare Pages
@@ -93,43 +71,56 @@ Or connect this GitHub repository in the Cloudflare dashboard:
 - Build output directory: `public`
 - Environment variable: `NODE_VERSION=22`
 
-Then add these optional variables in Pages / Workers settings:
+## Runtime variables
+
+Add these in Worker / Pages `Settings -> Variables & Secrets`.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `UPSTREAM_GOPROXY` | No | Default is `https://proxy.golang.org`. |
-| `PROXY_TOKEN` | No | If set, Go proxy URL becomes `/proxy/<token>`. Also protects `/download` unless `DOWNLOAD_TOKEN` is set. |
+| `PROXY_TOKEN` | Recommended | Protects `/proxy`; also used by `/download` and `/git` when their own tokens are not set. |
 | `DOWNLOAD_TOKEN` | No | If set, binary download URL becomes `/download/<token>/...`. |
+| `GITHUB_PROXY_TOKEN` | No | If set, GitHub proxy URL becomes `/git/<token>/...` and `/github/<token>/archive/...`. |
 | `MCP_BEARER_TOKEN` | No | If set, `/mcp` requires `Authorization: Bearer <token>`. |
-| `ALLOW_MODULE_PREFIXES` | No | Comma-separated allowlist, for example `github.com/aisphereio/`. |
-| `BLOCK_MODULE_PREFIXES` | No | Comma-separated blocklist. |
+| `ALLOW_MODULE_PREFIXES` | No | Comma-separated Go module allowlist, for example `github.com/aisphereio/`. |
+| `BLOCK_MODULE_PREFIXES` | No | Comma-separated Go module blocklist. |
 | `DOWNLOAD_ALLOW_TOOLS` | No | Comma-separated tool allowlist. Default allows `go,buf,protoc`. |
 | `DEFAULT_GO_VERSION` | No | Used when `/download/go/latest/...` cannot query go.dev. Example: `go1.26.4`. |
 | `DEFAULT_BUF_VERSION` | No | Used when `/download/buf/latest/...` cannot query GitHub. Example: `v1.71.0`. |
 | `DEFAULT_PROTOC_VERSION` | No | Used when `/download/protoc/latest/...` cannot query GitHub. Example: `35.1`. |
+| `GITHUB_ALLOW_OWNERS` | No | Comma-separated GitHub owner allowlist, for example `aisphereio`. |
+| `GITHUB_ALLOW_REPOS` | No | Comma-separated repo allowlist, for example `aisphereio/kernel,aisphereio/mcp-server-go`. Takes priority over owner allowlist. |
+| `GITHUB_TOKEN` | No | Optional GitHub token forwarded only to GitHub upstream. Use only if you need private repo read access. Store as a secret. |
 
-## Secure proxy and download URLs
+Recommended public-repo setup:
 
-If you set `PROXY_TOKEN=abc123`, use this as the Go proxy base:
+```text
+PROXY_TOKEN=<long-random-token>
+DOWNLOAD_TOKEN=<long-random-token>
+GITHUB_PROXY_TOKEN=<long-random-token>
+DOWNLOAD_ALLOW_TOOLS=go,buf,protoc
+GITHUB_ALLOW_OWNERS=aisphereio
+DEFAULT_GO_VERSION=go1.26.4
+DEFAULT_BUF_VERSION=v1.71.0
+DEFAULT_PROTOC_VERSION=35.1
+```
+
+## Go module proxy
+
+Without token:
+
+```bash
+export GOPROXY="https://<your-domain>/proxy,direct"
+export GOSUMDB="sum.golang.org"
+go mod tidy
+```
+
+With `PROXY_TOKEN=abc123`:
 
 ```bash
 export GOPROXY="https://<your-domain>/proxy/abc123,direct"
 go mod tidy
 ```
-
-The same token also protects downloads by default:
-
-```bash
-curl -L -o go.tar.gz https://<your-domain>/download/abc123/go/latest/linux/amd64
-```
-
-If you set `DOWNLOAD_TOKEN=download123`, downloads use that token instead:
-
-```bash
-curl -L -o go.tar.gz https://<your-domain>/download/download123/go/latest/linux/amd64
-```
-
-For public modules and public tool binaries this is usually enough. Do not use this to expose private module credentials.
 
 ## Binary download bridge
 
@@ -139,96 +130,58 @@ URL shape:
 /download[/token]/{tool}/{version|latest}/{os}/{arch}
 ```
 
-Supported tools:
-
-| Tool | Example | Upstream |
-| --- | --- | --- |
-| `go` | `/download/go/go1.26.4/linux/amd64` | `https://go.dev/dl/go1.26.4.linux-amd64.tar.gz` |
-| `buf` | `/download/buf/v1.71.0/linux/amd64` | `https://github.com/bufbuild/buf/releases/download/v1.71.0/buf-Linux-x86_64.tar.gz` |
-| `protoc` | `/download/protoc/35.1/linux/amd64` | `https://github.com/protocolbuffers/protobuf/releases/download/v35.1/protoc-35.1-linux-x86_64.zip` |
-
-Common aliases:
-
-- OS: `linux`, `darwin`, `macos`, `osx`, `windows`
-- Arch: `amd64`, `x86_64`, `x64`, `arm64`, `aarch64`, `386`
-
-Linux AMD64 examples:
+Examples:
 
 ```bash
-curl -L -o /tmp/go.tar.gz https://<your-domain>/download/go/latest/linux/amd64
-curl -L -o /tmp/buf.tar.gz https://<your-domain>/download/buf/latest/linux/amd64
-curl -L -o /tmp/protoc.zip https://<your-domain>/download/protoc/latest/linux/amd64
+curl -L -o /tmp/go.tar.gz https://<your-domain>/download/abc123/go/latest/linux/amd64
+curl -L -o /tmp/buf.tar.gz https://<your-domain>/download/abc123/buf/latest/linux/amd64
+curl -L -o /tmp/protoc.zip https://<your-domain>/download/abc123/protoc/latest/linux/amd64
 ```
 
-Install examples:
+## GitHub repository bridge
 
-```bash
-# Go
-curl -L -o /tmp/go.tar.gz https://<your-domain>/download/go/latest/linux/amd64
-sudo rm -rf /usr/local/go
-sudo tar -C /usr/local -xzf /tmp/go.tar.gz
-export PATH="/usr/local/go/bin:$PATH"
-go version
+There are two modes.
 
-# buf
-curl -L -o /tmp/buf.tar.gz https://<your-domain>/download/buf/latest/linux/amd64
-tmpdir=$(mktemp -d)
-tar -xzf /tmp/buf.tar.gz -C "$tmpdir"
-mkdir -p "$HOME/.local/bin"
-find "$tmpdir" -type f -name buf -exec install -m 0755 {} "$HOME/.local/bin/buf" \; -quit
-export PATH="$HOME/.local/bin:$PATH"
-buf --version
+### Mode A: Git HTTPS proxy
 
-# protoc
-curl -L -o /tmp/protoc.zip https://<your-domain>/download/protoc/latest/linux/amd64
-mkdir -p "$HOME/.local/protoc"
-unzip -o /tmp/protoc.zip -d "$HOME/.local/protoc"
-export PATH="$HOME/.local/protoc/bin:$PATH"
-protoc --version
-```
-
-## Test
-
-Health:
-
-```bash
-curl https://<your-domain>/health
-```
-
-Go proxy list example:
-
-```bash
-curl https://<your-domain>/proxy/github.com/gin-gonic/gin/@v/list
-```
-
-Binary download examples:
-
-```bash
-curl -I https://<your-domain>/download/go/latest/linux/amd64
-curl -I https://<your-domain>/download/buf/latest/linux/amd64
-curl -I https://<your-domain>/download/protoc/latest/linux/amd64
-```
-
-Go module tidy example:
-
-```bash
-git clone https://github.com/gin-gonic/examples.git
-cd examples
-export GOPROXY="https://<your-domain>/proxy,direct"
-go mod tidy
-```
-
-MCP Inspector:
-
-```bash
-npx @modelcontextprotocol/inspector@latest
-```
-
-Use MCP server URL:
+URL shape:
 
 ```text
-https://<your-domain>/mcp
+/git[/token]/{owner}/{repo}.git
 ```
+
+Example with `GITHUB_PROXY_TOKEN=git123`:
+
+```bash
+git clone https://<your-domain>/git/git123/aisphereio/kernel.git
+cd kernel
+git pull --ff-only
+```
+
+This proxies the GitHub HTTPS smart protocol to:
+
+```text
+https://github.com/aisphereio/kernel.git
+```
+
+It can support normal `git clone`, `git fetch`, and `git pull` as long as the client can reach your Cloudflare domain and GitHub accepts the upstream request.
+
+### Mode B: Repository archive download
+
+URL shape:
+
+```text
+/github[/token]/archive/{owner}/{repo}/{ref}/{zip|tar.gz}
+```
+
+Examples:
+
+```bash
+curl -L -o kernel.zip https://<your-domain>/github/git123/archive/aisphereio/kernel/main/zip
+curl -L -o kernel.tar.gz https://<your-domain>/github/git123/archive/aisphereio/kernel/main/tar.gz
+```
+
+Archive mode is usually more reliable for restricted environments because it is a single HTTP download. Git mode is closer to real `git pull`, but depends on Git smart-protocol behavior over HTTP.
 
 ## MCP tools
 
@@ -238,20 +191,75 @@ https://<your-domain>/mcp
 - `tool_download_config` — generates a Cloudflare download URL and install command for `go`, `buf`, or `protoc`.
 - `tool_download_preflight` — HEAD-checks a resolved upstream binary artifact and returns status, content length, and metadata.
 - `tool_download_bundle_manifest` — returns a standard Linux/macOS/Windows toolchain manifest for Go + buf + protoc.
+- `github_repo_config` — generates Git clone/pull commands or archive download commands for a GitHub repository URL.
+- `github_repo_preflight` — checks GitHub API and `info/refs` reachability for a repository.
 
-Example MCP prompt after connecting this server to ChatGPT:
+Example MCP prompts after connecting this server to ChatGPT:
 
 ```text
 Use Aisphere Go MCP to generate Linux amd64 install commands for Go, buf, and protoc.
 ```
 
+```text
+Use Aisphere Go MCP to generate git clone/pull commands for https://github.com/aisphereio/kernel.git.
+```
+
+```text
+Use Aisphere Go MCP to generate an archive download command for https://github.com/aisphereio/kernel.git ref main.
+```
+
+## Health and tests
+
+```bash
+curl https://<your-domain>/health
+```
+
+Go proxy:
+
+```bash
+curl https://<your-domain>/proxy/abc123/github.com/gin-gonic/gin/@v/list
+```
+
+Binary downloads:
+
+```bash
+curl -I https://<your-domain>/download/abc123/go/latest/linux/amd64
+curl -I https://<your-domain>/download/abc123/buf/latest/linux/amd64
+curl -I https://<your-domain>/download/abc123/protoc/latest/linux/amd64
+```
+
+GitHub archive:
+
+```bash
+curl -I https://<your-domain>/github/git123/archive/aisphereio/kernel/main/zip
+```
+
+Git clone:
+
+```bash
+git ls-remote https://<your-domain>/git/git123/aisphereio/kernel.git
+git clone https://<your-domain>/git/git123/aisphereio/kernel.git
+```
+
+MCP Inspector:
+
+```bash
+npx @modelcontextprotocol/inspector@latest
+```
+
+MCP server URL:
+
+```text
+https://<your-domain>/mcp
+```
+
 ## Important limitations
 
-- This cannot make a closed ChatGPT sandbox magically use a system-wide network proxy. The sandbox must be able to call your Cloudflare URL, or the MCP client must explicitly call the MCP tools.
-- It does not implement HTTP `CONNECT`, SOCKS5, SSH tunneling, Git protocol, or arbitrary TCP forwarding.
-- It cannot run `go mod tidy` inside Cloudflare because Workers/Pages Functions do not provide a normal Linux process environment with the Go toolchain.
-- Large module `.zip` bodies and binary tool archives are streamed through `/proxy` or `/download`; they are intentionally not returned inside MCP text tool responses.
-- Private modules need a different design, usually a trusted origin service with credentials, or Cloudflare Tunnel to a small VM that can run `go env GOPRIVATE` and `git` safely.
+- This cannot make a closed ChatGPT sandbox magically use a system-wide proxy. The sandbox must be able to call your Cloudflare URL, or the MCP client must explicitly call the MCP tools.
+- It does not implement HTTP `CONNECT`, SOCKS5, SSH tunneling, arbitrary TCP forwarding, or the SSH Git protocol.
+- It cannot run `git pull` inside Cloudflare. It only proxies the GitHub HTTPS requests that a real local `git` command sends.
+- For private repositories, configure `GITHUB_TOKEN` only as a Cloudflare secret and protect `/git` and `/github` with `GITHUB_PROXY_TOKEN`. Do not expose this publicly.
+- Archive downloads are simpler and more reliable than Git smart-protocol proxying for one-shot source retrieval.
 
 ## Recommended next step for aisphere offline builds
 
@@ -260,12 +268,14 @@ Use this project as layer 1:
 ```text
 GOPROXY -> Cloudflare /proxy -> proxy.golang.org
 curl    -> Cloudflare /download -> go.dev / GitHub Releases
+git     -> Cloudflare /git -> github.com
+curl    -> Cloudflare /github/archive -> codeload.github.com
 ```
 
 For stronger offline development, add layer 2 later:
 
 ```text
-MCP tool -> GitHub Actions job -> download Go/buf/protoc + go mod download/vendor -> artifact zip
+MCP tool -> GitHub Actions job -> git clone + download Go/buf/protoc + go mod download/vendor -> artifact zip
 ```
 
 That second layer is the right place to produce deterministic offline bundles for this assistant sandbox or Windows/Linux air-gapped environments.
