@@ -1,0 +1,25 @@
+{
+  "name": "mcp-server-go",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Workers/Pages MCP server plus Go module proxy bridge for constrained Go build environments.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "pages:dev": "wrangler pages dev public --compatibility-date=2026-07-02 --compatibility-flags=nodejs_compat",
+    "pages:deploy": "wrangler pages deploy public --project-name=mcp-server-go --compatibility-date=2026-07-02 --compatibility-flags=nodejs_compat",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "agents": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}
