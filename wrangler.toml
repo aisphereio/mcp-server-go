@@ -1,0 +1,12 @@
+name = "mcp-server-go"
+main = "src/index.ts"
+compatibility_date = "2026-07-02"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+UPSTREAM_GOPROXY = "https://proxy.golang.org"
+# Optional hardening. Set with `npx wrangler secret put ...` in production instead of plain vars.
+# PROXY_TOKEN = "change-me"
+# MCP_BEARER_TOKEN = "change-me"
+# ALLOW_MODULE_PREFIXES = "github.com/aisphereio/,github.com/gin-gonic/"
+# BLOCK_MODULE_PREFIXES = "example.com/bad/"
