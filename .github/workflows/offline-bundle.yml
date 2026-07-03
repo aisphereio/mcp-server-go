@@ -1,0 +1,158 @@
+name: Offline Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Request id returned by MCP
+        required: true
+        type: string
+      mode:
+        description: archive, gomod, or tidy
+        required: true
+        default: gomod
+        type: choice
+        options:
+          - archive
+          - gomod
+          - tidy
+      target_repo:
+        description: Target GitHub repository, owner/repo
+        required: true
+        type: string
+      target_ref:
+        description: Branch, tag, or commit
+        required: true
+        default: main
+        type: string
+      go_version:
+        description: Go version for module operations
+        required: true
+        default: '1.26.4'
+        type: string
+
+run-name: offline-${{ inputs.mode }}-${{ inputs.target_repo }}-${{ inputs.request_id }}
+
+permissions:
+  contents: read
+
+env:
+  REQUEST_ID: ${{ inputs.request_id }}
+  MODE: ${{ inputs.mode }}
+  TARGET_REPO: ${{ inputs.target_repo }}
+  TARGET_REF: ${{ inputs.target_ref }}
+  GO_VERSION: ${{ inputs.go_version }}
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Prepare workspace
+        run: |
+          set -euxo pipefail
+          mkdir -p work out logs
+          echo "request_id=${REQUEST_ID}" | tee out/manifest.txt
+          echo "mode=${MODE}" | tee -a out/manifest.txt
+          echo "target_repo=${TARGET_REPO}" | tee -a out/manifest.txt
+          echo "target_ref=${TARGET_REF}" | tee -a out/manifest.txt
+          echo "go_version=${GO_VERSION}" | tee -a out/manifest.txt
+
+      - name: Setup Go
+        if: inputs.mode == 'gomod' || inputs.mode == 'tidy'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go_version }}
+          cache: false
+
+      - name: Clone target repository
+        run: |
+          set -euxo pipefail
+          case "${TARGET_REPO}" in
+            *..*|/*|*//*|*' '*|*':'*) echo "invalid TARGET_REPO=${TARGET_REPO}" >&2; exit 2 ;;
+          esac
+          git clone --filter=blob:none "https://github.com/${TARGET_REPO}.git" work/repo
+          cd work/repo
+          git fetch --tags --force origin
+          git checkout "${TARGET_REF}" || git checkout "origin/${TARGET_REF}" || git checkout FETCH_HEAD
+          git rev-parse HEAD | tee ../../out/commit.txt
+          git status --short | tee ../../logs/git-status-before.txt
+
+      - name: Archive source tree
+        run: |
+          set -euxo pipefail
+          cd work
+          zip -qr ../out/repo-source.zip repo
+          tar -czf ../out/repo-source.tar.gz repo
+
+      - name: Go module download bundle
+        if: inputs.mode == 'gomod' || inputs.mode == 'tidy'
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          cd work/repo
+          if [ ! -f go.mod ]; then
+            echo "go.mod not found" | tee ../../logs/go-mod-download.log
+            exit 0
+          fi
+          export GOPATH="$GITHUB_WORKSPACE/work/gopath"
+          export GOMODCACHE="$GOPATH/pkg/mod"
+          export GOSUMDB=sum.golang.org
+          export GOPROXY=https://proxy.golang.org,direct
+          mkdir -p "$GOMODCACHE"
+          go env | tee ../../logs/go-env.log
+          go mod download -x all 2>&1 | tee ../../logs/go-mod-download.log
+          cd "$GITHUB_WORKSPACE/work"
+          tar -czf ../out/gomodcache.tar.gz gopath/pkg/mod || true
+
+      - name: Go mod tidy remote
+        if: inputs.mode == 'tidy'
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+          cd work/repo
+          if [ ! -f go.mod ]; then
+            echo "go.mod not found" | tee ../../logs/go-mod-tidy.log
+            exit 0
+          fi
+          export GOPATH="$GITHUB_WORKSPACE/work/gopath"
+          export GOMODCACHE="$GOPATH/pkg/mod"
+          export GOSUMDB=sum.golang.org
+          export GOPROXY=https://proxy.golang.org,direct
+          cp go.mod ../../out/go.mod.before
+          [ -f go.sum ] && cp go.sum ../../out/go.sum.before || true
+          go mod tidy 2>&1 | tee ../../logs/go-mod-tidy.log
+          cp go.mod ../../out/go.mod.after
+          [ -f go.sum ] && cp go.sum ../../out/go.sum.after || true
+          git diff -- go.mod go.sum > ../../out/go-mod-tidy.diff || true
+          git status --short | tee ../../logs/git-status-after-tidy.txt
+
+      - name: Write final manifest
+        if: always()
+        run: |
+          set -euxo pipefail
+          {
+            echo "request_id=${REQUEST_ID}"
+            echo "mode=${MODE}"
+            echo "target_repo=${TARGET_REPO}"
+            echo "target_ref=${TARGET_REF}"
+            echo "go_version=${GO_VERSION}"
+            echo "github_run_id=${GITHUB_RUN_ID}"
+            echo "github_run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "workflow_sha=${GITHUB_SHA}"
+            echo "created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "artifact_contents="
+            find out logs -maxdepth 2 -type f | sort
+          } | tee out/manifest.txt
+
+      - name: Upload offline bundle artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aisphere-offline-${{ inputs.mode }}-${{ inputs.request_id }}
+          path: |
+            out/**
+            logs/**
+          if-no-files-found: warn
+          retention-days: 7
