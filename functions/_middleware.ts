@@ -1,4 +1,4 @@
-import worker, { type Env } from "../src/index";
+import worker, { type Env } from "../src/actions-worker";
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   return worker.fetch(
