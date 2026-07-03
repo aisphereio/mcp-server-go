@@ -1,5 +1,5 @@
 name = "mcp-server-go"
-main = "src/index.ts"
+main = "src/actions-worker.ts"
 compatibility_date = "2026-07-02"
 compatibility_flags = ["nodejs_compat"]
 
@@ -10,6 +10,7 @@ UPSTREAM_GOPROXY = "https://proxy.golang.org"
 # DOWNLOAD_TOKEN = "change-me"
 # GITHUB_PROXY_TOKEN = "change-me"
 # MCP_BEARER_TOKEN = "change-me"
+# ACTIONS_MCP_BEARER_TOKEN = "change-me"
 # ALLOW_MODULE_PREFIXES = "github.com/aisphereio/,github.com/gin-gonic/"
 # BLOCK_MODULE_PREFIXES = "example.com/bad/"
 # DOWNLOAD_ALLOW_TOOLS = "go,buf,protoc"
@@ -19,3 +20,7 @@ UPSTREAM_GOPROXY = "https://proxy.golang.org"
 # GITHUB_ALLOW_OWNERS = "aisphereio"
 # GITHUB_ALLOW_REPOS = "aisphereio/kernel,aisphereio/mcp-server-go"
 # GITHUB_TOKEN = "ghp_xxx"
+# Required for /mcp-actions and /actions/* workflow dispatch/status.
+# GITHUB_ACTION_TOKEN = "github_pat_xxx"
+# GITHUB_ACTION_REPO = "aisphereio/mcp-server-go"
+# GITHUB_ACTION_REF = "main"
